@@ -30,6 +30,16 @@ npm run build
 npm run typecheck
 ```
 
+## GitHub Pages
+
+The live static copy is meant for [https://78tacos.github.io/cha-caddy/](https://78tacos.github.io/cha-caddy/). GitHub Pages cannot run the Node server, so that build keeps the cellar in this browser (timer, photos, notes). Listing lookup, Grok, accounts, and household sharing stay on a hosted deploy.
+
+```bash
+npm run build:pages
+```
+
+After merge to `main`, turn on **Settings → Pages → GitHub Actions** once. Later pushes to `main` publish automatically.
+
 ## What’s in here
 
 - Cellar cards with type-colored Chinese motif backgrounds

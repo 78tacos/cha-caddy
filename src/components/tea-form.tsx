@@ -25,6 +25,7 @@ import {
   type TeaLookup,
 } from "@/lib/teas/lookup";
 import { compressDataUrl, compressImageFile } from "@/lib/teas/photos";
+import { isStaticPages, PAGES_LOOKUP_MESSAGE } from "@/lib/static-pages";
 import { displayTempField, parseTempField, readTempUnit, formatTempRange, useTempUnit } from "@/lib/teas/temp";
 import { looksLikePageUrl, toListingUrl, type PageHit, type PhotoCandidate } from "@/lib/teas/sources";
 import { useCellar } from "@/lib/teas/use-cellar";
@@ -46,6 +47,12 @@ import {
   type BrewParams,
 } from "@/lib/teas/types";
 import { cn } from "@/lib/utils";
+
+function rejectPagesAi(): boolean {
+  if (!isStaticPages) return false;
+  toast.error(PAGES_LOOKUP_MESSAGE);
+  return true;
+}
 
 export function TeaForm({
   initial,
@@ -166,6 +173,7 @@ export function TeaForm({
   }
 
   async function onFindInfo() {
+    if (rejectPagesAi()) return;
     const name = draft.name.trim() || query.trim();
     const seed = name.toLowerCase();
     if (!draft.name.trim() && name) patch({ name });
@@ -227,6 +235,10 @@ export function TeaForm({
   }
 
   async function runPageSearch(q: string) {
+    if (isStaticPages) {
+      setSearching(false);
+      return;
+    }
     const gen = ++searchGen.current;
     setSearching(true);
     try {
@@ -300,6 +312,10 @@ export function TeaForm({
   }
 
   async function runShopSearch(q: string) {
+    if (isStaticPages) {
+      setFindingShops(false);
+      return;
+    }
     const gen = ++shopGen.current;
     setFindingShops(true);
     try {
@@ -328,6 +344,7 @@ export function TeaForm({
   }
 
   async function onLookup() {
+    if (rejectPagesAi()) return;
     const q = query.trim() || draft.name.trim();
     const listing = (picked?.url || (looksLikePageUrl(url) ? toListingUrl(url) : looksLikePageUrl(q) ? toListingUrl(q) : "")).trim();
     if (!listing) {
@@ -379,6 +396,7 @@ export function TeaForm({
   }
 
   async function onUnknownPrompt() {
+    if (rejectPagesAi()) return;
     const hasAnything = clues.trim() || appearance.trim() || dryAroma.trim() || acquiredFrom.trim();
     if (!hasAnything) {
       toast.error("Give Grok one clue — wrapper text, leaf, or where it came from.");
@@ -433,6 +451,7 @@ export function TeaForm({
         wrapperPhotoUrl: dataUrl,
         photoUrl: d.photoUrl || dataUrl,
       }));
+      if (rejectPagesAi()) return;
       setReading(true);
       const result = await ocrWrapper({ data: { image: dataUrl } });
       if (!result.ok) {
@@ -458,6 +477,7 @@ export function TeaForm({
   }
 
   async function onPolish() {
+    if (rejectPagesAi()) return;
     const draftText = draft.description.trim();
     const notes = notesText.trim();
     if (!draftText && !notes && !draft.name.trim()) {
@@ -489,6 +509,7 @@ export function TeaForm({
   }
 
   async function onGenerateImage() {
+    if (rejectPagesAi()) return;
     if (!imagePrompt.trim() && !genRef && !draft.photoUrl) {
       toast.error("Describe the leaf, or attach a photo to polish.");
       return;

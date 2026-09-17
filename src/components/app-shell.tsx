@@ -3,6 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { BookOpen, Clock, LayoutGrid, Plus, Users } from "lucide-react";
 import { GaiwanMark } from "@/components/mark";
 import { RedirectToSignIn, UserButton } from "@/lib/auth/gates";
+import { isStaticPages } from "@/lib/static-pages";
 import { authClient, getBearerToken } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { selectReminderTeas } from "@/lib/teas/store";
@@ -169,7 +170,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-28">{children}</main>
+      <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-28">
+        {isStaticPages ? (
+          <p className="mb-4 rounded-md bg-secondary px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+            GitHub Pages copy: the cellar stays on this browser. Listing lookup, Grok notes, and household
+            sharing need a hosted server.
+          </p>
+        ) : null}
+        {children}
+      </main>
 
       <nav
         className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm"

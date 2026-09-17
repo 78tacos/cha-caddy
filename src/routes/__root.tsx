@@ -5,6 +5,7 @@ import { QueryProvider } from "@/components/query-provider";
 import { AppShell } from "@/components/app-shell";
 import { ReminderWatcher } from "@/components/reminders";
 import { Toaster } from "sonner";
+import { isStaticPages, publicUrl } from "@/lib/static-pages";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Cha Caddy";
@@ -22,42 +23,54 @@ export const Route = createRootRoute({
       { name: "theme-color", content: "#0e0d0b" },
     ],
     links: [
-      { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      { rel: "icon", type: "image/svg+xml", href: publicUrl("favicon.svg") },
       { rel: "stylesheet", href: appCss },
-      { rel: "manifest", href: "/__grok/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
+      ...(isStaticPages
+        ? [{ rel: "manifest" as const, href: publicUrl("manifest.webmanifest") }]
+        : [
+            { rel: "manifest" as const, href: "/__grok/manifest.webmanifest" },
+            { rel: "apple-touch-icon" as const, href: "/__grok/icon-180.png" },
+          ]),
     ],
   }),
   component: RootLayout,
 });
 
 function RootLayout() {
+  const app = (
+    <>
+      <PreviewHostBridge />
+      <AuthProvider>
+        <QueryProvider>
+          <ReminderWatcher />
+          <AppShell>
+            <Outlet />
+          </AppShell>
+          <Toaster
+            theme="dark"
+            position="top-center"
+            toastOptions={{
+              style: {
+                background: "#171512",
+                color: "#f2ede4",
+                border: "1px solid color-mix(in oklab, #f2ede4 12%, transparent)",
+              },
+            }}
+          />
+        </QueryProvider>
+      </AuthProvider>
+    </>
+  );
+
+  if (isStaticPages) return app;
+
   return (
     <html lang="en" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
       <body>
-        <PreviewHostBridge />
-        <AuthProvider>
-          <QueryProvider>
-            <ReminderWatcher />
-            <AppShell>
-              <Outlet />
-            </AppShell>
-            <Toaster
-              theme="dark"
-              position="top-center"
-              toastOptions={{
-                style: {
-                  background: "#171512",
-                  color: "#f2ede4",
-                  border: "1px solid color-mix(in oklab, #f2ede4 12%, transparent)",
-                },
-              }}
-            />
-          </QueryProvider>
-        </AuthProvider>
+        {app}
         <Scripts />
       </body>
     </html>

@@ -1,23 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
-import {
-  addComment,
-  createTea,
-  joinCellar,
-  leaveCellar,
-  listCellar,
-  logSteep,
-  markNotifiedToday,
-  removeComment,
-  removeTea,
-  renameCellar,
-  setNotify,
-  setLookupPrefs,
-  setCategories,
-  switchCellar,
-  updateTea,
-} from "./api";
+import { isStaticPages } from "@/lib/static-pages";
+import * as remote from "./api";
+import * as local from "./local-cellar";
 import { enqueueSteep, readCache, readQueue, writeCache, writeQueue, type CellarCache } from "./offline";
 import type { CellarSettings, LogSteepInput, SharedCellar, Tea, TeaCategory, TeaDraft } from "./types";
 import { cloneCategories, defaultCellarSettings } from "./types";
@@ -36,6 +22,8 @@ function mergeSettings(s: CellarSettings | undefined | null): CellarSettings {
   };
 }
 
+const api = isStaticPages ? local : remote;
+
 export function cellarQueryKey(userId: string | undefined) {
   return ["cellar", userId ?? "none"] as const;
 }
@@ -50,7 +38,7 @@ export function useCellar() {
 
   const query = useQuery({
     queryKey: key,
-    queryFn: () => listCellar(),
+    queryFn: () => api.listCellar(),
     enabled: Boolean(user),
     staleTime: 8_000,
     retry: 1,
@@ -75,7 +63,7 @@ export function useCellar() {
 
   const flushing = useRef(false);
   useEffect(() => {
-    if (!userId) return;
+    if (isStaticPages || !userId) return;
     const uid = userId;
     async function flush() {
       if (flushing.current) return;
@@ -86,7 +74,7 @@ export function useCellar() {
       for (const item of queue) {
         try {
           const { queuedAt: _q, ...payload } = item;
-          await logSteep({ data: payload });
+          await api.logSteep({ data: payload });
         } catch {
           remain.push(item);
         }
@@ -113,20 +101,20 @@ export function useCellar() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
 
   const addMutation = useMutation({
-    mutationFn: (draft: TeaDraft) => createTea({ data: draft }),
+    mutationFn: (draft: TeaDraft) => api.createTea({ data: draft }),
     onSuccess: invalidate,
   });
   const updateMutation = useMutation({
-    mutationFn: (input: { id: string; patch: Partial<Tea> }) => updateTea({ data: input }),
+    mutationFn: (input: { id: string; patch: Partial<Tea> }) => api.updateTea({ data: input }),
     onSuccess: invalidate,
   });
   const removeMutation = useMutation({
-    mutationFn: (id: string) => removeTea({ data: { id } }),
+    mutationFn: (id: string) => api.removeTea({ data: { id } }),
     onSuccess: invalidate,
   });
   const steepMutation = useMutation({
     mutationFn: (input: LogSteepInput) =>
-      logSteep({
+      api.logSteep({
         data: {
           id: input.id,
           note: input.note ?? "",
@@ -146,12 +134,13 @@ export function useCellar() {
     onSuccess: invalidate,
   });
   const notifyMutation = useMutation({
-    mutationFn: (notify: boolean) => setNotify({ data: { notify } }),
+    mutationFn: (notify: boolean) => api.setNotify({ data: { notify } }),
     onSuccess: invalidate,
   });
   const lookupPrefsMutation = useMutation({
-    mutationFn: (prefs: { pullPhotos: boolean; confirmPhotos: boolean; lookupSources: string[] }) =>
-      setLookupPrefs({ data: prefs }),
+    mutationFn: async (prefs: { pullPhotos: boolean; confirmPhotos: boolean; lookupSources: string[] }) => {
+      await api.setLookupPrefs({ data: prefs });
+    },
     onMutate: async (prefs) => {
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
@@ -174,7 +163,9 @@ export function useCellar() {
     onSettled: invalidate,
   });
   const categoriesMutation = useMutation({
-    mutationFn: (categories: TeaCategory[]) => setCategories({ data: { categories } }),
+    mutationFn: async (categories: TeaCategory[]) => {
+      await api.setCategories({ data: { categories } });
+    },
     onMutate: async (categories) => {
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
@@ -197,31 +188,33 @@ export function useCellar() {
     onSettled: invalidate,
   });
   const notifiedMutation = useMutation({
-    mutationFn: (day: string) => markNotifiedToday({ data: { day } }),
+    mutationFn: (day: string) => api.markNotifiedToday({ data: { day } }),
     onSuccess: invalidate,
   });
   const commentMutation = useMutation({
-    mutationFn: (input: { teaId: string; body: string }) => addComment({ data: input }),
+    mutationFn: async (input: { teaId: string; body: string }) => {
+      await api.addComment({ data: input });
+    },
     onSuccess: invalidate,
   });
   const removeCommentMutation = useMutation({
-    mutationFn: (id: string) => removeComment({ data: { id } }),
+    mutationFn: (id: string) => api.removeComment({ data: { id } }),
     onSuccess: invalidate,
   });
   const joinMutation = useMutation({
-    mutationFn: (code: string) => joinCellar({ data: { code } }),
+    mutationFn: (code: string) => api.joinCellar({ data: { code } }),
     onSuccess: invalidate,
   });
   const leaveMutation = useMutation({
-    mutationFn: () => leaveCellar(),
+    mutationFn: () => api.leaveCellar(),
     onSuccess: invalidate,
   });
   const renameMutation = useMutation({
-    mutationFn: (name: string) => renameCellar({ data: { name } }),
+    mutationFn: (name: string) => api.renameCellar({ data: { name } }),
     onSuccess: invalidate,
   });
   const switchMutation = useMutation({
-    mutationFn: (cellarId: string) => switchCellar({ data: { cellarId } }),
+    mutationFn: (cellarId: string) => api.switchCellar({ data: { cellarId } }),
     onSuccess: invalidate,
   });
 

@@ -1,3 +1,4 @@
+import { isStaticPages, PAGES_USER_ID } from "@/lib/static-pages";
 import { authClient, authEnabled } from "./client";
 
 /** Normalized user shape used across the app, auth on or off. */
@@ -21,6 +22,15 @@ export const DEV_USER: AppUser = {
   id: "dev-user",
   displayName: "Dev User",
   primaryEmail: "dev@example.com",
+  profileImageUrl: null,
+  isDevFallback: true,
+};
+
+/** GitHub Pages static build: one local owner, no /api/auth. */
+export const PAGES_USER: AppUser = {
+  id: PAGES_USER_ID,
+  displayName: "This device",
+  primaryEmail: null,
   profileImageUrl: null,
   isDevFallback: true,
 };
@@ -55,6 +65,7 @@ export type CurrentUserState = {
  * call keeps a stable hook order across every render of a given component.
  */
 export function useCurrentUserState(): CurrentUserState {
+  if (isStaticPages) return { user: PAGES_USER, isPending: false };
   if (!authEnabled) return { user: DEV_USER, isPending: false };
   // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
   const { data, isPending } = authClient.useSession();

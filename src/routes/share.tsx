@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Copy, Download, Plus, Users, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatJoinCode } from "@/lib/teas/codes";
 import { cellarToJson, downloadText, teasToCsv } from "@/lib/teas/export";
+import { dumpCellarBackup } from "@/lib/teas/api";
 import { personalTasteNote, tagCounts } from "@/lib/teas/profile";
 import {
   DEFAULT_LOOKUP_SOURCES,
@@ -61,6 +63,8 @@ function SharePage() {
   const [savingCats, setSavingCats] = useState(false);
   const [newCat, setNewCat] = useState("");
   const [openCat, setOpenCat] = useState<string | null>(null);
+  const [backingUp, setBackingUp] = useState(false);
+  const dumpBackup = useServerFn(dumpCellarBackup);
 
   useEffect(() => {
     if (cellar) setName(cellar.name);
@@ -210,6 +214,23 @@ function SharePage() {
   function exportJson() {
     downloadText("cha-caddy.json", cellarToJson(teas), "application/json");
     toast.success("JSON downloaded.");
+  }
+
+  async function onFullBackup() {
+    setBackingUp(true);
+    try {
+      const result = await dumpBackup({ data: {} });
+      downloadText("cha-caddy-backup.json", result.json, "application/json");
+      toast.success(
+        result.wroteArtifact
+          ? `Full backup of ${result.teaCount} teas in ${result.cellarCount} cellar${result.cellarCount === 1 ? "" : "s"}.`
+          : `Full backup of ${result.teaCount} teas.`,
+      );
+    } catch (err) {
+      toast.error(errMsg(err, "Could not write a full backup."));
+    } finally {
+      setBackingUp(false);
+    }
   }
 
   return (
@@ -576,6 +597,18 @@ function SharePage() {
           </div>
         </section>
       ) : null}
+
+      <section className="space-y-2">
+        <h2 className="font-display text-2xl font-medium">Full backup</h2>
+        <p className="text-sm text-muted-foreground">
+          The live cellar database — every tea you can see, including ones added by hand, with
+          photos, sessions, and household notes. Use this when the preview download fails.
+        </p>
+        <Button type="button" variant="celadon" className="w-full" onClick={() => void onFullBackup()} disabled={backingUp}>
+          <Download className="size-4" />
+          {backingUp ? "Writing backup…" : "Full backup"}
+        </Button>
+      </section>
 
       {cellar.role === "owner" ? (
         <form onSubmit={onRename} className="space-y-2">

@@ -4,6 +4,7 @@ import { format as formatDate } from "date-fns";
 import { ArrowLeft, Lock, Pencil, Sparkles, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { GongfuTimer } from "@/components/gongfu-timer";
+import { PhotoCarousel } from "@/components/photo-carousel";
 import { SteepDialog } from "@/components/steep-dialog";
 import { TeaComments } from "@/components/tea-comments";
 import { TeaForm } from "@/components/tea-form";
@@ -29,6 +30,7 @@ import {
   tempRangeFor,
   typeLabel,
 } from "@/lib/teas/types";
+import { photosOf } from "@/lib/teas/photos";
 
 export const Route = createFileRoute("/tea/$id")({ component: TeaDetailPage });
 
@@ -146,11 +148,7 @@ function TeaDetailPage() {
       </div>
 
       <div className="overflow-hidden rounded-xl bg-card shadow-[var(--shadow-border)]">
-        <div className="aspect-photo bg-secondary">
-          {tea.photoUrl ? (
-            <img src={tea.photoUrl} alt={tea.name} className="size-full object-cover" />
-          ) : null}
-        </div>
+        <PhotoCarousel photos={photosOf(tea)} alt={tea.name} />
         <div className="space-y-2 px-5 py-5">
           <div className="flex flex-wrap items-center gap-2">
             <TypeSeal type={tea.type} label={typeLabel(tea.type, settings.categories)} />
@@ -312,13 +310,6 @@ function TeaDetailPage() {
         {tea.processing ? <Stat label="Processing" value={tea.processing} /> : null}
         {tea.aging ? <Stat label="Aging" value={tea.aging} /> : null}
       </dl>
-
-      {tea.wrapperPhotoUrl ? (
-        <section className="space-y-2">
-          <h2 className="font-display text-2xl font-medium">Wrapper</h2>
-          <img src={tea.wrapperPhotoUrl} alt="Wrapper" className="w-full rounded-xl object-cover" />
-        </section>
-      ) : null}
 
       {tea.sessions.length > 0 ? (
         <section className="space-y-3">

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Camera, ChevronDown, HelpCircle, Loader2, ScanLine, Search, Sparkles, Upload } from "lucide-react";
+import { HelpCircle, Loader2, Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { PhotoEditor } from "@/components/photo-carousel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,7 +25,7 @@ import {
   type TeaGuess,
   type TeaLookup,
 } from "@/lib/teas/lookup";
-import { compressDataUrl, compressImageFile } from "@/lib/teas/photos";
+import { compressDataUrl, compressImageFile, parsePhotos, syncPhotoFields, upsertPhoto } from "@/lib/teas/photos";
 import { displayTempField, parseTempField, readTempUnit, formatTempRange, useTempUnit } from "@/lib/teas/temp";
 import { looksLikePageUrl, toListingUrl, type PageHit, type PhotoCandidate } from "@/lib/teas/sources";
 import { useCellar } from "@/lib/teas/use-cellar";
@@ -66,7 +67,10 @@ export function TeaForm({
   const findInfo = useServerFn(guessTeaInfo);
   const { settings, setLookupPrefs } = useCellar();
   const { unit, toggle } = useTempUnit();
-  const [draft, setDraft] = useState<TeaDraft>(initial);
+  const [draft, setDraft] = useState<TeaDraft>(() => {
+    const synced = syncPhotoFields(parsePhotos(initial.photos, initial.photoUrl, initial.wrapperPhotoUrl));
+    return { ...initial, ...synced };
+  });
   const [query, setQuery] = useState(initial.name);
   const [url, setUrl] = useState(initial.listingUrl);
   const [looking, setLooking] = useState(false);
@@ -133,7 +137,7 @@ export function TeaForm({
       infusions: t.brew.infusions || "",
     };
     setDraft((d) => {
-      return {
+      const next = {
         ...d,
         ...extra,
         name: t.name || extra.name || d.name || fallbackName,
@@ -155,10 +159,13 @@ export function TeaForm({
         restDays: t.restDays || restDaysFor(t.type),
         sources: t.sources.length ? t.sources : d.sources,
         photoUrl: extra.photoUrl !== undefined ? extra.photoUrl : d.photoUrl,
+        photos: extra.photos ?? d.photos,
         recipe: extra.recipe || t.recipe || d.recipe,
         listingUrl: extra.listingUrl || t.listingUrl || d.listingUrl,
         form: extra.form || t.form || d.form,
+        wrapperPhotoUrl: extra.wrapperPhotoUrl !== undefined ? extra.wrapperPhotoUrl : d.wrapperPhotoUrl,
       };
+      return { ...next, ...syncPhotoFields(parsePhotos(next.photos, next.photoUrl, next.wrapperPhotoUrl)) };
     });
     setTempText(displayTempField(brew, unit));
     setQuery(t.name || fallbackName);
@@ -355,10 +362,17 @@ export function TeaForm({
         : settings.confirmPhotos
           ? undefined
           : (photos[0]?.url ?? "");
+      const extraPhotos =
+        nextPhoto !== undefined
+          ? nextPhoto
+            ? upsertPhoto(draft.photos, nextPhoto, "tea")
+            : draft.photos
+          : undefined;
       applyLookup(result.tea, q, {
         unknown: false,
         listingUrl: listing || result.tea.listingUrl,
-        ...(nextPhoto !== undefined ? { photoUrl: nextPhoto } : {}),
+        year: result.tea.yearTypical,
+        ...(extraPhotos ? { photos: extraPhotos } : {}),
       });
       setUrl(listing || result.tea.listingUrl);
       if (settings.pullPhotos && settings.confirmPhotos && photos.length > 0) {
@@ -414,26 +428,9 @@ export function TeaForm({
     }
   }
 
-  async function onPhoto(file: File | undefined) {
-    if (!file) return;
+  async function onWrapperOcr(dataUrl: string) {
+    setReading(true);
     try {
-      const dataUrl = await compressImageFile(file);
-      patch({ photoUrl: dataUrl });
-    } catch {
-      toast.error("Could not read that photo.");
-    }
-  }
-
-  async function onWrapper(file: File | undefined) {
-    if (!file) return;
-    try {
-      const dataUrl = await compressImageFile(file, 1100, 0.78);
-      setDraft((d) => ({
-        ...d,
-        wrapperPhotoUrl: dataUrl,
-        photoUrl: d.photoUrl || dataUrl,
-      }));
-      setReading(true);
       const result = await ocrWrapper({ data: { image: dataUrl } });
       if (!result.ok) {
         toast.error(result.error);
@@ -489,7 +486,7 @@ export function TeaForm({
   }
 
   async function onGenerateImage() {
-    if (!imagePrompt.trim() && !genRef && !draft.photoUrl) {
+    if (!imagePrompt.trim() && !genRef && !draft.photoUrl && draft.photos.length === 0) {
       toast.error("Describe the leaf, or attach a photo to polish.");
       return;
     }
@@ -513,7 +510,7 @@ export function TeaForm({
       } catch {
         /* keep original */
       }
-      patch({ photoUrl: url });
+      patch(syncPhotoFields(upsertPhoto(draft.photos, url, "tea")));
       toast.success("Portrait ready — keep it or generate again.");
     } catch {
       toast.error("Could not generate that photo.");
@@ -542,8 +539,10 @@ export function TeaForm({
     setSaving(true);
     try {
       const temps = parseTempField(tempText, unit);
+      const synced = syncPhotoFields(parsePhotos(draft.photos, draft.photoUrl, draft.wrapperPhotoUrl));
       await onSubmit({
         ...draft,
+        ...synced,
         name: draft.name.trim(),
         listingUrl: draft.listingUrl || url.trim() || picked?.url || "",
         tastingNotes: notesText
@@ -892,12 +891,12 @@ export function TeaForm({
         <section id="photo-candidates" className="space-y-2 rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
           <p className="font-display text-xl font-medium">Confirm a listing photo</p>
           <p className="text-xs text-muted-foreground">
-            Shots from the page you picked — portrait of the leaf, or wrapper / nei fei. Skip if none match what you have.
+            Shots from the page you picked — tea leaf or packaging. Skip if none match what you have.
           </p>
           <div className="grid grid-cols-2 gap-2">
             {candidates.map((p) => {
-              const asPortrait = draft.photoUrl === p.url;
-              const asWrapper = draft.wrapperPhotoUrl === p.url;
+              const asPortrait = draft.photos.some((ph) => ph.url === p.url && ph.kind === "tea");
+              const asWrapper = draft.photos.some((ph) => ph.url === p.url && ph.kind === "packaging");
               return (
                 <div
                   key={p.url}
@@ -911,23 +910,23 @@ export function TeaForm({
                   <div className="flex gap-1 px-2 pb-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => patch({ photoUrl: p.url })}
+                      onClick={() => patch(syncPhotoFields(upsertPhoto(draft.photos, p.url, "tea")))}
                       className={cn(
                         "h-9 flex-1 rounded-md text-[11px]",
                         asPortrait ? "bg-celadon text-celadon-fg" : "bg-card text-muted-foreground",
                       )}
                     >
-                      Portrait
+                      Tea
                     </button>
                     <button
                       type="button"
-                      onClick={() => patch({ wrapperPhotoUrl: p.url })}
+                      onClick={() => patch(syncPhotoFields(upsertPhoto(draft.photos, p.url, "packaging")))}
                       className={cn(
                         "h-9 flex-1 rounded-md text-[11px]",
                         asWrapper ? "bg-celadon text-celadon-fg" : "bg-card text-muted-foreground",
                       )}
                     >
-                      Wrapper
+                      Packaging
                     </button>
                   </div>
                 </div>
@@ -936,7 +935,13 @@ export function TeaForm({
           </div>
           <button
             type="button"
-            onClick={() => patch({ photoUrl: "", wrapperPhotoUrl: draft.wrapperPhotoUrl })}
+            onClick={() =>
+              patch(
+                syncPhotoFields(
+                  draft.photos.filter((ph) => ph.kind !== "tea"),
+                ),
+              )
+            }
             className="flex min-h-11 items-center text-xs text-muted-foreground"
           >
             No portrait — I’ll add my own
@@ -1065,119 +1070,24 @@ export function TeaForm({
             Rename or add bins
           </Link>
         </p>
-        <button
-          type="button"
-          onClick={() => document.getElementById("tea-photo")?.click()}
-          className="relative block w-full overflow-hidden rounded-xl bg-secondary"
-        >
-          {draft.photoUrl ? (
-            <img src={draft.photoUrl} alt="" className="aspect-photo w-full object-cover" />
-          ) : (
-            <div className="flex aspect-photo flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Upload className="size-5" />
-              Photo of the wrapper, cake, or dry leaf
-            </div>
-          )}
-        </button>
-        <input
-          id="tea-photo"
-          type="file"
-          accept="image/*"
-          className="sr-only"
-          onChange={(e) => onPhoto(e.target.files?.[0])}
+        <PhotoEditor
+          photos={draft.photos}
+          onChange={(photos) => patch(syncPhotoFields(photos))}
+          onReadWrapper={onWrapperOcr}
+          reading={reading}
+          searchName={draft.name || query}
+          teaType={draft.type}
+          subtype={draft.subtype}
+          generating={generating}
+          showGen={showGen}
+          onToggleGen={() => setShowGen((v) => !v)}
+          imagePrompt={imagePrompt}
+          onImagePrompt={setImagePrompt}
+          genRef={genRef}
+          onGenRef={(file) => void onGenRef(file)}
+          onClearRef={() => setGenRef("")}
+          onGenerate={() => void onGenerateImage()}
         />
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowGen((v) => !v)}
-            className="flex min-h-11 items-center gap-1.5 text-xs text-celadon"
-            aria-expanded={showGen}
-          >
-            <Sparkles className="size-3.5" />
-            Generate a photo
-            <ChevronDown className={cn("size-3.5 transition-transform", showGen ? "rotate-180" : "")} />
-          </button>
-          {showGen ? (
-            <div className="mt-2 space-y-2 rounded-lg bg-secondary p-3">
-              <p className="text-xs text-muted-foreground">
-                Describe the leaf, or snap what you have — Grok turns it into a clean portrait.
-              </p>
-              <Textarea
-                value={imagePrompt}
-                onChange={(e) => setImagePrompt(e.target.value)}
-                rows={2}
-                placeholder="tight dark Assam, gold tips, malty…"
-              />
-              {genRef ? (
-                <div className="flex items-center gap-2">
-                  <img src={genRef} alt="" className="size-12 rounded-md object-cover" />
-                  <button
-                    type="button"
-                    className="text-xs text-muted-foreground"
-                    onClick={() => setGenRef("")}
-                  >
-                    Remove reference
-                  </button>
-                </div>
-              ) : null}
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => document.getElementById("tea-gen-ref")?.click()}
-                >
-                  <Camera className="size-4" />
-                  {genRef ? "Change photo" : "Use a photo"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="celadon"
-                  onClick={() => void onGenerateImage()}
-                  disabled={generating}
-                >
-                  {generating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                  {generating ? "Making…" : "Generate"}
-                </Button>
-              </div>
-              <input
-                id="tea-gen-ref"
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="sr-only"
-                onChange={(e) => void onGenRef(e.target.files?.[0])}
-              />
-            </div>
-          ) : null}
-        </div>
-
-        <div className="space-y-2 rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-          <p className="text-xs font-medium tracking-wide text-muted-foreground">Wrapper / ticket</p>
-          <button
-            type="button"
-            onClick={() => document.getElementById("tea-wrapper")?.click()}
-            className="flex w-full items-center gap-3 overflow-hidden rounded-lg bg-secondary"
-          >
-            {draft.wrapperPhotoUrl ? (
-              <img src={draft.wrapperPhotoUrl} alt="" className="size-16 object-cover" />
-            ) : (
-              <span className="grid size-16 place-items-center text-muted-foreground">
-                <ScanLine className="size-5" />
-              </span>
-            )}
-            <span className="py-3 pr-3 text-left text-sm">
-              {reading ? "Reading characters…" : "Snap the nei fei, wrapper, or a shop screenshot"}
-            </span>
-          </button>
-          <input
-            id="tea-wrapper"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="sr-only"
-            onChange={(e) => void onWrapper(e.target.files?.[0])}
-          />
-        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Year / vintage">

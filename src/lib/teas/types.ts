@@ -273,6 +273,14 @@ export type TasteTag = (typeof TASTE_TAGS)[number];
 
 export const LOW_STOCK_GRAMS = 20;
 
+export type PhotoKind = "tea" | "packaging" | "";
+
+export type TeaPhoto = {
+  id: string;
+  url: string;
+  kind: PhotoKind;
+};
+
 export type BrewParams = {
   vessel: string;
   grams: string;
@@ -349,6 +357,7 @@ export type Tea = {
   aging: string;
   restDays: number;
   photoUrl: string;
+  photos: TeaPhoto[];
   acquiredAt: string;
   createdAt: string;
   lastSteepedAt: string | null;
@@ -442,6 +451,7 @@ export const emptyDraft = (): TeaDraft => ({
   aging: "",
   restDays: 14,
   photoUrl: "",
+  photos: [],
   acquiredAt: new Date().toISOString().slice(0, 10),
   sources: [],
   unknown: false,
@@ -491,6 +501,7 @@ export function teaToDraft(tea: Tea): TeaDraft {
     aging: tea.aging,
     restDays: tea.restDays,
     photoUrl: tea.photoUrl,
+    photos: tea.photos ?? [],
     acquiredAt: tea.acquiredAt,
     sources: tea.sources,
     unknown: tea.unknown,

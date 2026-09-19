@@ -42,6 +42,7 @@ type Raw = Omit<
   | "lastDrinkerName"
   | "lastSteepTimes"
   | "lastVessel"
+  | "photos"
 >;
 
 const RAW_SEED: Raw[] = [
@@ -431,6 +432,7 @@ export const SEED_TEAS: Tea[] = RAW_SEED.map((t) => {
     intent: inferIntent(t),
     locked: false,
     wrapperPhotoUrl: "",
+    photos: [],
     lastDrinkerName: last?.authorName ?? "",
     lastSteepTimes: last?.steepTimes ?? [],
     lastVessel: last?.vessel ?? t.brew?.vessel ?? "",

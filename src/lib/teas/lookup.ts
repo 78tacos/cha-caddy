@@ -10,7 +10,7 @@ import {
   type TeaForm,
   type TeaType,
 } from "./types";
-import { extractSteepTime, extractTempRange, TYPE_BREW } from "./brew";
+import { extractSteepTime, extractTempRange, extractHarvestYear, TYPE_BREW } from "./brew";
 import { gongfuTimeFromText, lifeBrewHint, loadLifeWiki, matchLifeEntries, matchLifeEntry, type LifeEntry } from "./wiki-life";
 import {
   detectShop,
@@ -431,6 +431,7 @@ async function lookupFromAmazonTitle(
   if (!tea) {
     return { ok: false, error: "Could not identify that Amazon tea from the title." };
   }
+  const harvest = extractHarvestYear(`${title} ${titleHint} ${query}`);
   return {
     ok: true,
     from: ["Amazon title", ...generic.from],
@@ -440,6 +441,7 @@ async function lookupFromAmazonTitle(
       listingUrl: url,
       vendorGuess: tea.vendorGuess || "Amazon",
       descriptionSource: "general",
+      yearTypical: tea.yearTypical || harvest,
     },
   };
 }
@@ -769,7 +771,7 @@ function normalize(
   obj: Record<string, unknown>,
   fallbackName: string,
   sources: string[],
-  extras: Partial<Pick<TeaLookup, "photoUrl" | "listingUrl" | "descriptionSource">> & {
+  extras: Partial<Pick<TeaLookup, "photoUrl" | "listingUrl" | "descriptionSource" | "yearTypical">> & {
     tempC?: number | null;
     tempLowC?: number | null;
     tempHighC?: number | null;
@@ -826,7 +828,7 @@ function normalize(
     region: asString(obj.region),
     cultivar: asString(obj.cultivar),
     vendorGuess: asString(obj.vendorGuess),
-    yearTypical: asString(obj.yearTypical) || asString(obj.year),
+    yearTypical: asString(obj.yearTypical) || asString(obj.year) || extras.yearTypical || "",
     processing: asString(obj.processing),
     description,
     descriptionSource: sourceFlag,
@@ -972,7 +974,8 @@ Rules:
 - type is the broad category first; subtype is the style (Wuyi rock, TGY, Phoenix dancong, Ripe puerh, etc.).
 - Ripe puerh / shou puerh is type heicha, subtype Ripe puerh. Liu Bao and Fu brick are also heicha. Raw puerh is type sheng.
 - Golden Monkey / 金猴 / Jin Hou is Fujian hong cha (Bai Lin Gong Fu), never an animal.
-- Water temperature: from the listing if present, otherwise 0. Also extract gongfu steeping as steepTime like "10s, +5s" when the listing gives times.`;
+- Water temperature: from the listing if present, otherwise 0. Also extract gongfu steeping as steepTime like "10s, +5s" when the listing gives times.
+- yearTypical: the harvest, press, or vintage year from THIS listing. Copy phrases like "2021 harvest", "Spring 2021", "2021年", "pressed 2018". Check the title, spec table, and body. Empty string if the listing does not name a year. Never invent a year.`;
 
 export const searchTeaPages = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -1232,6 +1235,7 @@ export const lookupTea = createServerFn({ method: "POST" })
     const listingRange = extractTempRange(`${scraped.meta}\n${scraped.text}`);
     const lifeHint = lifeBrewHint(lifeHit);
     const listingTime = extractSteepTime(`${scraped.meta}\n${scraped.text}`) || lifeHint.time || gongfuTimeFromText(lifeHit?.brewing ?? "");
+    const harvestYear = extractHarvestYear(`${scraped.title}\n${scraped.meta}\n${scraped.text}\n${q}`);
     const photos = pullPhotos && !isWikiHost(hostOf(scraped.listingUrl)) ? scraped.photos : [];
 
     const userParts = [
@@ -1239,6 +1243,7 @@ export const lookupTea = createServerFn({ method: "POST" })
       `Chosen listing URL: ${scraped.listingUrl}`,
       `Page title: ${scraped.title}`,
       scraped.meta ? `Listing meta description:\n${scraped.meta}` : null,
+      harvestYear ? `Harvest/year already visible on the page (copy into yearTypical if it matches): ${harvestYear}` : null,
       `Listing text:\n${scraped.text.slice(0, 8000)}`,
       wiki ? `General reference (use ONLY if the listing has no real description):\n${wiki.extract}` : null,
       lifeHit
@@ -1258,6 +1263,7 @@ export const lookupTea = createServerFn({ method: "POST" })
       tempLowC: listingRange?.tempLowC ?? lifeHint.tempLowC,
       tempHighC: listingRange?.tempHighC ?? lifeHint.tempHighC,
       time: listingTime,
+      yearTypical: harvestYear,
     };
 
     if (!parsed.ok) {
@@ -1415,5 +1421,163 @@ export const guessTeaInfo = createServerFn({ method: "POST" })
       return { ok: true, teas: result.teas, from: result.from };
     } catch {
       return { ok: false, error: "Could not look that tea up. Try again in a moment." };
+    }
+  });
+
+export type WebPhoto = { url: string; label: string; source: string };
+
+export type SearchImagesResult =
+  | { ok: true; photos: WebPhoto[] }
+  | { ok: false; error: string };
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003d/gi, "=")
+    .replace(/\\\//g, "/")
+    .replace(/&/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/"/g, '"');
+}
+
+async function searchWikiImages(query: string): Promise<WebPhoto[]> {
+  const q = /\btea\b/i.test(query) ? query : `${query} tea`;
+  try {
+    const res = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=6&prop=pageimages|pageterms&piprop=thumbnail&pithumbsize=800&wbptterms=description&format=json&origin=*`,
+      {
+        headers: { "Api-User-Agent": "ChaCaddy/1.7 (tea cellar; image search)", Accept: "application/json" },
+        signal: AbortSignal.timeout(6000),
+      },
+    );
+    if (!res.ok) return [];
+    const body = (await res.json()) as {
+      query?: {
+        pages?: Record<
+          string,
+          { title?: string; thumbnail?: { source?: string }; terms?: { description?: string[] } }
+        >;
+      };
+    };
+    const out: WebPhoto[] = [];
+    for (const page of Object.values(body.query?.pages ?? {})) {
+      const url = page.thumbnail?.source;
+      if (!url || !/^https?:/i.test(url)) continue;
+      out.push({
+        url,
+        label: page.title || query,
+        source: "Wikipedia",
+      });
+      if (out.length >= 6) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function searchBingImages(query: string): Promise<WebPhoto[]> {
+  const q = /\btea\b/i.test(query) ? query : `${query} chinese tea dry leaf`;
+  try {
+    const res = await fetch(
+      `https://www.bing.com/images/search?q=${encodeURIComponent(q)}&form=HDRSC2&first=1&tsc=ImageHoverTitle`,
+      {
+        headers: { "User-Agent": SHOP_UA, Accept: "text/html" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(7000),
+      },
+    );
+    if (!res.ok) return [];
+    const html = (await res.text()).slice(0, 350000);
+    const out: WebPhoto[] = [];
+    const seen = new Set<string>();
+    const push = (raw: string, label = "") => {
+      const cleaned = decodeHtmlEntities(raw).replace(/\\/g, "");
+      if (!/^https?:\/\//i.test(cleaned)) return;
+      try {
+        const u = new URL(cleaned);
+        if (u.protocol !== "http:" && u.protocol !== "https:") return;
+        if (isPrivateHost(u.hostname)) return;
+        if (/\.(svg)(\?|$)/i.test(u.pathname)) return;
+        const key = u.toString();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push({ url: key, label: label.slice(0, 80) || query, source: "Web" });
+      } catch {
+        /* skip */
+      }
+    };
+    for (const m of html.matchAll(/"murl":"([^"]+)"/g)) push(m[1] ?? "");
+    if (out.length < 4) {
+      for (const m of html.matchAll(/murl":"([^&]+)"/g)) push(m[1] ?? "");
+    }
+    if (out.length < 4) {
+      for (const m of html.matchAll(/"turl":"([^"]+)"/g)) push(m[1] ?? "");
+    }
+    return out.slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
+export const searchTeaImages = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    z.object({
+      name: z.string().trim().max(220).default(""),
+      type: z.string().trim().max(40).optional(),
+      subtype: z.string().trim().max(120).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<SearchImagesResult> => {
+    const name = data.name.trim();
+    if (!name && !data.subtype) {
+      return { ok: false, error: "Type a name first, then search photos." };
+    }
+    const q = name || [data.subtype, "chinese tea"].filter(Boolean).join(" ");
+    try {
+      const [wiki, bing] = await Promise.all([searchWikiImages(q), searchBingImages(`${q} dry leaf`)]);
+      const merged: WebPhoto[] = [];
+      const seen = new Set<string>();
+      for (const p of [...wiki, ...bing]) {
+        const key = p.url.replace(/\/$/, "").toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(p);
+        if (merged.length >= 10) break;
+      }
+      if (!merged.length) return { ok: false, error: "No photos found. Try a clearer name." };
+      return { ok: true, photos: merged };
+    } catch {
+      return { ok: false, error: "Could not search photos right now." };
+    }
+  });
+
+export const fetchTeaImage = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({ url: z.string().trim().min(8).max(1500) }))
+  .handler(async ({ data }): Promise<{ ok: true; url: string } | { ok: false; error: string }> => {
+    let parsed: URL;
+    try {
+      parsed = assertPublicHttpUrl(data.url);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "That image URL is not usable." };
+    }
+    try {
+      const res = await fetch(parsed.toString(), {
+        headers: { "User-Agent": SHOP_UA, Accept: "image/*,*/*;q=0.8" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) return { ok: false, error: "Could not download that photo." };
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.byteLength < 40) return { ok: false, error: "That file is not an image." };
+      if (buf.byteLength > 1_400_000) return { ok: false, error: "That photo is too large. Try another." };
+      const mime = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+      if (!mime.startsWith("image/")) return { ok: false, error: "That URL is not an image." };
+      return { ok: true, url: `data:${mime};base64,${buf.toString("base64")}` };
+    } catch {
+      return { ok: false, error: "Could not pull that photo in." };
     }
   });

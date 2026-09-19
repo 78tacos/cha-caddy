@@ -109,6 +109,52 @@ export function extractSteepTime(text: string): string {
   return "";
 }
 
+/** Harvest / press / vintage year from listing title or body. Empty if none. */
+export function extractHarvestYear(text: string): string {
+  const src = String(text ?? "").replace(/\s+/g, " ");
+  if (!src.trim()) return "";
+  const now = new Date().getFullYear();
+  const maxYear = now + 1;
+  const minYear = 1980;
+
+  const yearIn = (raw: string | undefined): string => {
+    if (!raw) return "";
+    const m = raw.match(/(?:19|20)\d{2}/);
+    if (!m) return "";
+    const n = Number(m[0]);
+    return n >= minYear && n <= maxYear ? m[0] : "";
+  };
+
+  const seasonal = src.match(
+    /\b((?:early|late|mid)?\s*(?:spring|summer|autumn|fall|winter)\s+((?:19|20)\d{2}))\b/i,
+  );
+  if (seasonal?.[1] && yearIn(seasonal[2])) {
+    return seasonal[1].replace(/\s+/g, " ").trim().replace(/^\w/, (c) => c.toUpperCase());
+  }
+
+  const labeled = [
+    /\b((?:19|20)\d{2})\s*(?:harvest|vintage|press(?:ing|ed)?|production|picked|pluck(?:ed)?|year)\b/i,
+    /(?:harvest|vintage|pressed|pressing|produced|production|picked|pluck(?:ed)?|year|采摘|壓制|压制)[:\s]+((?:19|20)\d{2})/i,
+    /\b((?:19|20)\d{2})\s*年(?:春|夏|秋|冬|采|產|产|壓|压|份)?/,
+    /\b((?:19|20)\d{2})\s*(?:春茶|秋茶|冬茶|夏茶|饼|餅)/,
+  ];
+  for (const re of labeled) {
+    const m = src.match(re);
+    const y = yearIn(m?.[1]);
+    if (y) return y;
+  }
+
+  const candidates = [...src.matchAll(/\b((?:19|20)\d{2})\b/g)];
+  for (const m of candidates) {
+    const y = yearIn(m[1]);
+    if (!y || m.index == null) continue;
+    const around = src.slice(Math.max(0, m.index - 18), m.index + 22);
+    if (/(?:©|&copy;|copyright|since|founded|est\.?|updated|posted)/i.test(around)) continue;
+    return y;
+  }
+  return "";
+}
+
 export function formatSeconds(total: number): string {
   const s = Math.max(0, Math.ceil(total));
   const m = Math.floor(s / 60);

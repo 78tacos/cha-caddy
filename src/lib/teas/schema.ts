@@ -12,6 +12,12 @@ export const brewSchema = z.object({
   infusions: z.string().max(40),
 });
 
+export const teaPhotoSchema = z.object({
+  id: z.string().max(80),
+  url: z.string().max(1_500_000),
+  kind: z.enum(["tea", "packaging", ""]),
+});
+
 export const teaDraftSchema = z.object({
   name: z.string().trim().min(1).max(200),
   nameZh: z.string().max(200),
@@ -32,6 +38,7 @@ export const teaDraftSchema = z.object({
   aging: z.string().max(2000),
   restDays: z.number().int().min(1).max(365),
   photoUrl: z.string().max(1_500_000),
+  photos: z.array(teaPhotoSchema).max(12).default([]),
   acquiredAt: z.string().max(40),
   sources: z.array(z.string().max(400)).max(12),
   lastSteepedAt: z.string().nullable().optional(),

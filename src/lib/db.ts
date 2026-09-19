@@ -136,7 +136,7 @@ async function createPgliteSql(): Promise<Sql> {
   // auth schema under migrations/auth/ stays out. Runs once per module instance
   // — so an HMR reload after adding a migration file applies it live — with
   // passes serialized on a global chain so concurrent callers never
-  // double-apply. Touch this module after adding migrations/*.sql (0007 heicha categories).
+  // double-apply. Touch this module after adding migrations/*.sql (0008 tea photos).
   const migrate = async (): Promise<void> => {
     const migrations = import.meta.glob("/migrations/*.sql", {
       query: "?raw",

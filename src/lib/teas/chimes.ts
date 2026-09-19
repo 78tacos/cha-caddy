@@ -11,6 +11,7 @@ export const CHIME_LABEL: Record<ChimeId, string> = {
 };
 
 const KEY = "cha-caddy-chime";
+const MAX_CHIME_MS = 4000;
 
 const SAMPLE: Partial<Record<ChimeId, string>> = {
   gong: "/sounds/gong.mp3",
@@ -122,9 +123,28 @@ function playSynth(id: ChimeId) {
       tone(ctx, master, 1680, t, 0.12, 0.05, 0.9, "sine", 2400);
       tone(ctx, master, 2100, t + 0.12, 0.1, 0.05, 0.8, "sine", 2600);
     }
-    window.setTimeout(() => void ctx.close(), 2400);
+    window.setTimeout(() => void ctx.close(), Math.min(2400, MAX_CHIME_MS));
   } catch {
     /* ignore */
+  }
+}
+
+let current: HTMLAudioElement | null = null;
+let capTimer: number | null = null;
+
+function stopCurrent() {
+  if (capTimer != null) {
+    window.clearTimeout(capTimer);
+    capTimer = null;
+  }
+  if (current) {
+    try {
+      current.pause();
+      current.currentTime = 0;
+    } catch {
+      /* ignore */
+    }
+    current = null;
   }
 }
 
@@ -132,9 +152,19 @@ export function playChime(id: ChimeId = readChime()) {
   const src = SAMPLE[id];
   if (src && typeof Audio !== "undefined") {
     try {
+      stopCurrent();
       const audio = new Audio(src);
       audio.volume = 0.85;
-      void audio.play().catch(() => playSynth(id));
+      current = audio;
+      const stop = () => {
+        if (current === audio) stopCurrent();
+      };
+      audio.addEventListener("ended", stop);
+      capTimer = window.setTimeout(stop, MAX_CHIME_MS);
+      void audio.play().catch(() => {
+        stopCurrent();
+        playSynth(id);
+      });
       return;
     } catch {
       /* fall through to synth */

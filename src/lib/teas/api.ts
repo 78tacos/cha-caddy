@@ -20,6 +20,8 @@ import type {
 import { STORAGE_PLACES, TEA_FORMS, TEA_INTENTS, normalizeTeaType, parseCategories } from "./types";
 import { DEFAULT_LOOKUP_SOURCES, normalizeHost } from "./sources";
 import { normalizeJoinCode } from "./codes";
+import { parsePhotos, syncPhotoFields } from "./photos";
+import { isWorkspacePreview } from "@/lib/env.server";
 
 type TeaRow = {
   id: string;
@@ -59,6 +61,7 @@ type TeaRow = {
   intent?: string;
   locked?: boolean;
   wrapper_photo_url?: string;
+  photos?: unknown;
   last_drinker_name?: string;
   last_steep_times?: unknown;
   last_vessel?: string;
@@ -259,6 +262,7 @@ function mapSession(row: SessionRow): SteepSession {
 
 function mapTea(row: TeaRow, sessions: SteepSession[], comments: TeaComment[]): Tea {
   const norm = normalizeTeaType(row.type, row.subtype ?? "");
+  const synced = syncPhotoFields(parsePhotos(row.photos, row.photo_url ?? "", row.wrapper_photo_url ?? ""));
   return {
     id: row.id,
     name: row.name,
@@ -279,7 +283,8 @@ function mapTea(row: TeaRow, sessions: SteepSession[], comments: TeaComment[]): 
     brew: asBrew(row.brew),
     aging: row.aging,
     restDays: Number(row.rest_days) || 14,
-    photoUrl: row.photo_url ?? "",
+    photoUrl: synced.photoUrl,
+    photos: synced.photos,
     acquiredAt: row.acquired_at ?? "",
     createdAt: iso(row.created_at),
     lastSteepedAt: isoOrNull(row.last_steeped_at),
@@ -297,7 +302,7 @@ function mapTea(row: TeaRow, sessions: SteepSession[], comments: TeaComment[]): 
     storage: asStorage(row.storage),
     intent: asIntent(row.intent),
     locked: Boolean(row.locked),
-    wrapperPhotoUrl: row.wrapper_photo_url ?? "",
+    wrapperPhotoUrl: synced.wrapperPhotoUrl,
     lastDrinkerName: row.last_drinker_name ?? "",
     lastSteepTimes: asNumArray(row.last_steep_times),
     lastVessel: row.last_vessel ?? "",
@@ -305,19 +310,20 @@ function mapTea(row: TeaRow, sessions: SteepSession[], comments: TeaComment[]): 
 }
 
 async function insertTeaRow(sql: Sql, userId: string, cellarId: string, tea: Tea): Promise<void> {
+  const synced = syncPhotoFields(parsePhotos(tea.photos, tea.photoUrl, tea.wrapperPhotoUrl));
   await sql.query(
     `insert into teas (
       id, user_id, cellar_id, name, name_zh, pinyin, type, subtype, origin, region, cultivar, vendor,
       year, quantity, processing, description, tasting_notes, liquor, brew, aging,
       rest_days, photo_url, acquired_at, created_at, last_steeped_at, sources, unknown, prompt,
       form, original_grams, remaining_grams, factory, recipe, listing_url, storage, intent,
-      locked, wrapper_photo_url, last_drinker_name, last_steep_times, last_vessel
+      locked, wrapper_photo_url, last_drinker_name, last_steep_times, last_vessel, photos
     ) values (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
       $13,$14,$15,$16,$17::jsonb,$18,$19::jsonb,$20,
       $21,$22,$23,$24,$25,$26::jsonb,$27,$28,
       $29,$30,$31,$32,$33,$34,$35,$36,
-      $37,$38,$39,$40::jsonb,$41
+      $37,$38,$39,$40::jsonb,$41,$42::jsonb
     )`,
     [
       tea.id,
@@ -341,7 +347,7 @@ async function insertTeaRow(sql: Sql, userId: string, cellarId: string, tea: Tea
       tea.brew ? JSON.stringify(tea.brew) : null,
       tea.aging,
       tea.restDays,
-      tea.photoUrl,
+      synced.photoUrl,
       tea.acquiredAt,
       tea.createdAt,
       tea.lastSteepedAt,
@@ -357,10 +363,11 @@ async function insertTeaRow(sql: Sql, userId: string, cellarId: string, tea: Tea
       tea.storage,
       tea.intent,
       tea.locked,
-      tea.wrapperPhotoUrl,
+      synced.wrapperPhotoUrl,
       tea.lastDrinkerName,
       JSON.stringify(tea.lastSteepTimes),
       tea.lastVessel,
+      JSON.stringify(synced.photos),
     ],
   );
   for (const session of tea.sessions) {
@@ -596,8 +603,10 @@ async function loadCellarPayload(sql: Sql, userId: string) {
 }
 
 function draftToTea(draft: TeaDraft, id: string, createdAt: string): Tea {
+  const synced = syncPhotoFields(parsePhotos(draft.photos, draft.photoUrl, draft.wrapperPhotoUrl));
   return {
     ...draft,
+    ...synced,
     id,
     createdAt,
     lastSteepedAt: draft.lastSteepedAt ?? null,
@@ -664,6 +673,10 @@ export const updateTea = createServerFn({ method: "POST" })
       comments: current.comments,
       tastingNotes: (data.patch.tastingNotes ?? current.tastingNotes).filter(Boolean),
     };
+    const synced = syncPhotoFields(parsePhotos(merged.photos, merged.photoUrl, merged.wrapperPhotoUrl));
+    merged.photos = synced.photos;
+    merged.photoUrl = synced.photoUrl;
+    merged.wrapperPhotoUrl = synced.wrapperPhotoUrl;
     await sql.query(
       `update teas set
         name = $3, name_zh = $4, pinyin = $5, type = $6, subtype = $7, origin = $8, region = $9,
@@ -673,7 +686,7 @@ export const updateTea = createServerFn({ method: "POST" })
         last_steeped_at = $23, sources = $24::jsonb, unknown = $25, prompt = $26,
         form = $27, original_grams = $28, remaining_grams = $29, factory = $30, recipe = $31,
         listing_url = $32, storage = $33, intent = $34, locked = $35, wrapper_photo_url = $36,
-        last_steep_times = $37::jsonb
+        last_steep_times = $37::jsonb, photos = $38::jsonb
        where id = $1 and cellar_id = $2`,
       [
         data.id,
@@ -713,6 +726,7 @@ export const updateTea = createServerFn({ method: "POST" })
         merged.locked,
         merged.wrapperPhotoUrl,
         JSON.stringify(merged.lastSteepTimes ?? []),
+        JSON.stringify(merged.photos),
       ],
     );
     return merged;
@@ -1021,4 +1035,127 @@ export const leaveCellar = createServerFn({ method: "POST" })
       context.userId,
       next,
     ]);
+  });
+
+export const dumpCellarBackup = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({}).optional())
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const memberships = await sql.query<{
+      id: string;
+      name: string;
+      join_code: string;
+      role: string;
+    }>(
+      `select c.id, c.name, c.join_code, m.role
+       from cellar_members m
+       join cellars c on c.id = m.cellar_id
+       where m.user_id = $1
+       order by case when m.role = 'owner' then 0 else 1 end, c.name asc`,
+      [context.userId],
+    );
+
+    const settingsRows = await sql.query<SettingsRow>(
+      `select notify, last_notified_on, seeded, active_cellar_id, pull_photos, confirm_photos, lookup_sources, categories
+       from cellar_settings where user_id = $1`,
+      [context.userId],
+    );
+
+    const cellars = [];
+    const seenTea = new Set<string>();
+    for (const cellar of memberships) {
+      const members = await loadMembers(sql, cellar.id);
+      const teaRows = await sql.query<TeaRow>(
+        `select * from teas where cellar_id = $1 order by created_at desc`,
+        [cellar.id],
+      );
+      const sessionRows = await sql.query<SessionRow>(
+        `select s.*
+         from steep_sessions s
+         join teas t on t.id = s.tea_id
+         where t.cellar_id = $1
+         order by s.steeped_at desc`,
+        [cellar.id],
+      );
+      const commentRows = await sql.query<CommentRow>(
+        `select id, tea_id, user_id, author_name, body, created_at
+         from tea_comments where cellar_id = $1
+         order by created_at asc`,
+        [cellar.id],
+      );
+      const sessionsByTea = new Map<string, SteepSession[]>();
+      for (const row of sessionRows) {
+        const list = sessionsByTea.get(row.tea_id) ?? [];
+        list.push(mapSession(row));
+        sessionsByTea.set(row.tea_id, list);
+      }
+      const commentsByTea = new Map<string, TeaComment[]>();
+      for (const row of commentRows) {
+        const list = commentsByTea.get(row.tea_id) ?? [];
+        list.push({
+          id: row.id,
+          teaId: row.tea_id,
+          userId: row.user_id,
+          authorName: row.author_name || "Someone",
+          body: row.body,
+          createdAt: iso(row.created_at),
+        });
+        commentsByTea.set(row.tea_id, list);
+      }
+      const teas = teaRows.map((row) => {
+        seenTea.add(row.id);
+        return mapTea(row, sessionsByTea.get(row.id) ?? [], commentsByTea.get(row.id) ?? []);
+      });
+      cellars.push({
+        id: cellar.id,
+        name: cellar.name,
+        joinCode: cellar.join_code,
+        role: cellar.role === "owner" ? "owner" : "member",
+        members,
+        teas,
+      });
+    }
+
+    let extraTeas: Tea[] = [];
+    if (isWorkspacePreview()) {
+      const extraRows = await sql.query<TeaRow>(`select * from teas order by created_at desc`);
+      const leftover = extraRows.filter((r) => !seenTea.has(r.id));
+      if (leftover.length) {
+        extraTeas = leftover.map((row) => mapTea(row, [], []));
+      }
+    }
+
+    const payload = {
+      app: "cha-caddy",
+      version: "1.7",
+      exportedAt: new Date().toISOString(),
+      meId: context.userId,
+      settings: mapSettings(settingsRows[0]),
+      cellars,
+      extraTeas,
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const teaCount = cellars.reduce((n, c) => n + c.teas.length, 0) + extraTeas.length;
+    let wroteArtifact = false;
+    let artifactPath = "";
+    if (isWorkspacePreview()) {
+      try {
+        const fs = await import("node:fs/promises");
+        await fs.mkdir("/workspace/artifacts", { recursive: true });
+        artifactPath = "/workspace/artifacts/cha-caddy-backup.json";
+        await fs.writeFile(artifactPath, json, "utf8");
+        wroteArtifact = true;
+      } catch {
+        wroteArtifact = false;
+      }
+    }
+    return {
+      ok: true as const,
+      json,
+      teaCount,
+      cellarCount: cellars.length,
+      wroteArtifact,
+      artifactPath,
+    };
   });

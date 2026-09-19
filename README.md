@@ -34,8 +34,18 @@ npm run typecheck
 
 - Cellar cards with type-colored Chinese motif backgrounds
 - Add / edit tea, listing lookup, **Find tea info** for grocery and travel teas
-- Temperature ranges in °F (toggle °C), wrapper / nei fei photos
-- Gongfu timer with +1s / −1s (saved per tea), gong / bell / pour sounds
+- Temperature ranges in °F (toggle °C), photo carousel (tea / packaging labels), Find photos online
+- Gongfu timer with +1s / −1s (saved per tea), gong / bell / pour sounds (capped at 4 seconds)
 - Shared household cellars
+- Harvest / vintage year pulled from listings (e.g. “2021 harvest”)
+- Full backup of the live cellar (Share → Full backup)
+
+## v1.7
+
+- Timer sounds no longer play a long train/plane sample; every chime stops at 4s
+- One photo carousel instead of separate portrait + wrapper slots, with Tea / Packaging labels
+- Find photos online when you are filling a generic tea by hand
+- Listing harvest years land in Year / vintage
+- Share → Full backup dumps every cellar you can open (teas, photos, sessions)
 
 v1.6

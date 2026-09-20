@@ -108,16 +108,38 @@ function createNeonSql(): Promise<Sql> {
 
 async function createPgliteSql(): Promise<Sql> {
   // Embedded Postgres, imported on demand so it never loads on the Neon path.
-  // One in-memory instance per process, shared across HMR module instances, so
-  // data survives source edits (it resets on dev-server restart).
+  // Persists to ./data/pglite so the cellar survives a preview remake or
+  // `npm run dev` restart. Falls back to memory if the folder cannot be used.
+  // If that folder is empty, load the last dump tar written by Full backup.
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dataDir = path.join(process.cwd(), "data", "pglite");
+    const dumpTar = path.join(process.cwd(), "data", "cha-caddy.dump.tar");
+    const artifactTar = path.join(process.cwd(), "artifacts", "cha-caddy-pglite.tar");
+    const parsers = {
+      [OID_INT8]: Number,
+      [OID_DATE]: identity,
+      [OID_INTERVAL]: identity,
+    };
+    let loadDataDir: Blob | undefined;
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      const hasFiles = fs.readdirSync(dataDir).length > 0;
+      if (!hasFiles) {
+        const tarPath = fs.existsSync(dumpTar) ? dumpTar : fs.existsSync(artifactTar) ? artifactTar : "";
+        if (tarPath) {
+          loadDataDir = new Blob([fs.readFileSync(tarPath)]);
+        }
+      }
+    } catch {
+      /* memory fallback below */
+    }
     const pg = new PGlite({
-      parsers: {
-        [OID_INT8]: Number,
-        [OID_DATE]: identity,
-        [OID_INTERVAL]: identity,
-      },
+      ...(loadDataDir || fs.existsSync(dataDir) ? { dataDir } : {}),
+      ...(loadDataDir ? { loadDataDir } : {}),
+      parsers,
     });
     await pg.waitReady;
     await pg.exec(
@@ -137,6 +159,7 @@ async function createPgliteSql(): Promise<Sql> {
   // — so an HMR reload after adding a migration file applies it live — with
   // passes serialized on a global chain so concurrent callers never
   // double-apply. Touch this module after adding migrations/*.sql (0008 tea photos).
+  // PGLite now writes ./data/pglite so a remake of the preview keeps the cellar.
   const migrate = async (): Promise<void> => {
     const migrations = import.meta.glob("/migrations/*.sql", {
       query: "?raw",

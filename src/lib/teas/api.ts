@@ -1,9 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getSql, type Sql } from "@/lib/db";
+import { dbSource, getPglite, getSql, type Sql } from "@/lib/db";
 import { logSteepSchema, teaCategorySchema, teaDraftSchema, teaPatchSchema } from "./schema";
 import { SEED_TEAS } from "./seed";
+import { BACKUP_KIND, BACKUP_VERSION, parseBackupJson, teasFromBackup } from "./backup";
 import type {
   BrewParams,
   CellarMember,
@@ -394,6 +395,22 @@ async function insertTeaRow(sql: Sql, userId: string, cellarId: string, tea: Tea
         session.wetLeafPhotoUrl,
         JSON.stringify(session.steepTimes),
         JSON.stringify(session.tasteTags),
+      ],
+    );
+  }
+  for (const comment of tea.comments ?? []) {
+    await sql.query(
+      `insert into tea_comments (id, tea_id, cellar_id, user_id, author_name, body, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7)
+       on conflict (id) do nothing`,
+      [
+        comment.id || crypto.randomUUID(),
+        tea.id,
+        cellarId,
+        comment.userId || userId,
+        comment.authorName || "Someone",
+        comment.body,
+        comment.createdAt || new Date().toISOString(),
       ],
     );
   }
@@ -1042,19 +1059,33 @@ export const dumpCellarBackup = createServerFn({ method: "POST" })
   .validator(z.object({}).optional())
   .handler(async ({ context }) => {
     const sql = await getSql();
-    const memberships = await sql.query<{
-      id: string;
-      name: string;
-      join_code: string;
-      role: string;
-    }>(
-      `select c.id, c.name, c.join_code, m.role
-       from cellar_members m
-       join cellars c on c.id = m.cellar_id
-       where m.user_id = $1
-       order by case when m.role = 'owner' then 0 else 1 end, c.name asc`,
-      [context.userId],
-    );
+    const dumpAll = isWorkspacePreview() || dbSource === "pglite";
+    const memberships = dumpAll
+      ? await sql.query<{
+          id: string;
+          name: string;
+          join_code: string;
+          role: string;
+        }>(
+          `select c.id, c.name, c.join_code, coalesce(m.role, 'member') as role
+           from cellars c
+           left join cellar_members m on m.cellar_id = c.id and m.user_id = $1
+           order by c.created_at asc`,
+          [context.userId],
+        )
+      : await sql.query<{
+          id: string;
+          name: string;
+          join_code: string;
+          role: string;
+        }>(
+          `select c.id, c.name, c.join_code, m.role
+           from cellar_members m
+           join cellars c on c.id = m.cellar_id
+           where m.user_id = $1
+           order by case when m.role = 'owner' then 0 else 1 end, c.name asc`,
+          [context.userId],
+        );
 
     const settingsRows = await sql.query<SettingsRow>(
       `select notify, last_notified_on, seeded, active_cellar_id, pull_photos, confirm_photos, lookup_sources, categories
@@ -1118,17 +1149,55 @@ export const dumpCellarBackup = createServerFn({ method: "POST" })
     }
 
     let extraTeas: Tea[] = [];
-    if (isWorkspacePreview()) {
-      const extraRows = await sql.query<TeaRow>(`select * from teas order by created_at desc`);
-      const leftover = extraRows.filter((r) => !seenTea.has(r.id));
-      if (leftover.length) {
-        extraTeas = leftover.map((row) => mapTea(row, [], []));
+    const extraRows = await sql.query<TeaRow>(
+      dumpAll
+        ? `select * from teas order by created_at desc`
+        : `select t.* from teas t
+           join cellar_members m on m.cellar_id = t.cellar_id
+           where m.user_id = $1
+           order by t.created_at desc`,
+      dumpAll ? [] : [context.userId],
+    );
+    const leftover = extraRows.filter((r) => !seenTea.has(r.id));
+    if (leftover.length) {
+      const leftoverIds = leftover.map((r) => r.id);
+      const placeholders = leftoverIds.map((_, i) => `$${i + 1}`).join(",");
+      const sessionRows = await sql.query<SessionRow>(
+        `select * from steep_sessions where tea_id in (${placeholders}) order by steeped_at desc`,
+        leftoverIds,
+      );
+      const commentRows = await sql.query<CommentRow>(
+        `select id, tea_id, user_id, author_name, body, created_at from tea_comments where tea_id in (${placeholders}) order by created_at asc`,
+        leftoverIds,
+      );
+      const sessionsByTea = new Map<string, SteepSession[]>();
+      for (const row of sessionRows) {
+        const list = sessionsByTea.get(row.tea_id) ?? [];
+        list.push(mapSession(row));
+        sessionsByTea.set(row.tea_id, list);
       }
+      const commentsByTea = new Map<string, TeaComment[]>();
+      for (const row of commentRows) {
+        const list = commentsByTea.get(row.tea_id) ?? [];
+        list.push({
+          id: row.id,
+          teaId: row.tea_id,
+          userId: row.user_id,
+          authorName: row.author_name || "Someone",
+          body: row.body,
+          createdAt: iso(row.created_at),
+        });
+        commentsByTea.set(row.tea_id, list);
+      }
+      extraTeas = leftover.map((row) =>
+        mapTea(row, sessionsByTea.get(row.id) ?? [], commentsByTea.get(row.id) ?? []),
+      );
     }
 
     const payload = {
-      app: "cha-caddy",
-      version: "1.7",
+      kind: BACKUP_KIND,
+      app: "cha-caddy" as const,
+      version: BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
       meId: context.userId,
       settings: mapSettings(settingsRows[0]),
@@ -1139,15 +1208,30 @@ export const dumpCellarBackup = createServerFn({ method: "POST" })
     const teaCount = cellars.reduce((n, c) => n + c.teas.length, 0) + extraTeas.length;
     let wroteArtifact = false;
     let artifactPath = "";
-    if (isWorkspacePreview()) {
+    if (isWorkspacePreview() || dbSource === "pglite") {
       try {
         const fs = await import("node:fs/promises");
-        await fs.mkdir("/workspace/artifacts", { recursive: true });
-        artifactPath = "/workspace/artifacts/cha-caddy-backup.json";
-        await fs.writeFile(artifactPath, json, "utf8");
-        wroteArtifact = true;
+        const path = await import("node:path");
+        const dataDir = path.join(process.cwd(), "data");
+        await fs.mkdir(dataDir, { recursive: true });
+        await fs.writeFile(path.join(dataDir, "cha-caddy-backup.json"), json, "utf8");
+        if (isWorkspacePreview()) {
+          await fs.mkdir("/workspace/artifacts", { recursive: true });
+          artifactPath = "/workspace/artifacts/cha-caddy-backup.json";
+          await fs.writeFile(artifactPath, json, "utf8");
+          wroteArtifact = true;
+        }
+        if (dbSource === "pglite") {
+          const pg = await getPglite();
+          const blob = await pg.dumpDataDir("none");
+          const buf = Buffer.from(await blob.arrayBuffer());
+          await fs.writeFile(path.join(dataDir, "cha-caddy.dump.tar"), buf);
+          if (isWorkspacePreview()) {
+            await fs.writeFile("/workspace/artifacts/cha-caddy-pglite.tar", buf);
+          }
+        }
       } catch {
-        wroteArtifact = false;
+        wroteArtifact = Boolean(artifactPath);
       }
     }
     return {
@@ -1158,4 +1242,87 @@ export const dumpCellarBackup = createServerFn({ method: "POST" })
       wroteArtifact,
       artifactPath,
     };
+  });
+
+export const restoreCellarBackup = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    z.object({
+      json: z.string().min(20).max(40_000_000),
+      mode: z.enum(["merge", "replace"]),
+    }),
+  )
+  .handler(async ({ context, data }) => {
+    const backup = parseBackupJson(data.json);
+    const teas = teasFromBackup(backup);
+    if (!teas.length) throw new Error("That backup has no teas in it.");
+    const sql = await getSql();
+    const cellarId = await ensureCellar(sql, context.userId);
+    const { role } = await assertMember(sql, context.userId, cellarId);
+    if (role !== "owner") throw new Error("Only the owner can restore a backup into this cellar.");
+
+    if (data.mode === "replace") {
+      await sql.query(`delete from teas where cellar_id = $1`, [cellarId]);
+    }
+
+    const existing = await sql.query<{ id: string }>(`select id from teas where cellar_id = $1`, [cellarId]);
+    const taken = new Set(existing.map((r) => r.id));
+    let imported = 0;
+    let skipped = 0;
+    for (const tea of teas) {
+      let id = tea.id;
+      if (taken.has(id)) {
+        if (data.mode === "merge") {
+          skipped += 1;
+          continue;
+        }
+        id = crypto.randomUUID();
+      }
+      taken.add(id);
+      const sessions = tea.sessions.map((s) => ({
+        ...s,
+        id: crypto.randomUUID(),
+        userId: s.userId || context.userId,
+      }));
+      const comments = tea.comments.map((c) => ({
+        ...c,
+        id: crypto.randomUUID(),
+        teaId: id,
+        userId: c.userId || context.userId,
+      }));
+      await insertTeaRow(sql, context.userId, cellarId, { ...tea, id, sessions, comments });
+      imported += 1;
+    }
+
+    const ownerShelf = backup.cellars.find((c) => c.role === "owner") ?? backup.cellars[0];
+    if (ownerShelf?.name) {
+      await sql.query(`update cellars set name = $2 where id = $1`, [cellarId, ownerShelf.name.slice(0, 80)]);
+    }
+
+    const s = backup.settings;
+    await sql.query(
+      `insert into cellar_settings (user_id, seeded, notify, last_notified_on, pull_photos, confirm_photos, lookup_sources, categories, active_cellar_id)
+       values ($1, true, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
+       on conflict (user_id) do update set
+         seeded = true,
+         notify = excluded.notify,
+         last_notified_on = excluded.last_notified_on,
+         pull_photos = excluded.pull_photos,
+         confirm_photos = excluded.confirm_photos,
+         lookup_sources = excluded.lookup_sources,
+         categories = excluded.categories,
+         active_cellar_id = excluded.active_cellar_id`,
+      [
+        context.userId,
+        s.notify,
+        s.lastNotifiedOn,
+        s.pullPhotos,
+        s.confirmPhotos,
+        JSON.stringify(s.lookupSources),
+        JSON.stringify(s.categories),
+        cellarId,
+      ],
+    );
+
+    return { ok: true as const, imported, skipped, teaCount: teas.length };
   });

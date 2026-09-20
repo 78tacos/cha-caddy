@@ -37,6 +37,8 @@ npm run typecheck
 - Temperature ranges in °F (toggle °C), photo carousel (tea / packaging labels), Find photos online
 - Gongfu timer with +1s / −1s (saved per tea), gong / bell / pour sounds (capped at 4 seconds)
 - Shared household cellars
+- **Remake kit** (Share → Backup everything): teas, photos, sessions, notes. Restore with Add/Replace from file after you sign in on a new copy. Does not include your password.
+- Local `./data/pglite` keeps the cellar across `npm run dev` restarts
 - Harvest / vintage year pulled from listings (e.g. “2021 harvest”)
 - Full backup of the live cellar (Share → Full backup)
 

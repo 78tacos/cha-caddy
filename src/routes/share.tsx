@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Copy, Download, Plus, Users, X } from "lucide-react";
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatJoinCode } from "@/lib/teas/codes";
 import { cellarToJson, downloadText, teasToCsv } from "@/lib/teas/export";
-import { dumpCellarBackup } from "@/lib/teas/api";
+import { dumpCellarBackup, restoreCellarBackup } from "@/lib/teas/api";
 import { personalTasteNote, tagCounts } from "@/lib/teas/profile";
 import {
   DEFAULT_LOOKUP_SOURCES,
@@ -23,7 +23,8 @@ import {
   slugCategory,
   type TeaCategory,
 } from "@/lib/teas/types";
-import { useCellar } from "@/lib/teas/use-cellar";
+import { cellarQueryKey, useCellar } from "@/lib/teas/use-cellar";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/share")({ component: SharePage });
@@ -52,6 +53,7 @@ function SharePage() {
     setLookupPrefs,
     setCategories,
   } = useCellar();
+  const queryClient = useQueryClient();
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [renaming, setRenaming] = useState(false);
@@ -64,7 +66,11 @@ function SharePage() {
   const [newCat, setNewCat] = useState("");
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const dumpBackup = useServerFn(dumpCellarBackup);
+  const restoreBackup = useServerFn(restoreCellarBackup);
+  const restoreInput = useRef<HTMLInputElement>(null);
+  const restoreMode = useRef<"merge" | "replace">("merge");
 
   useEffect(() => {
     if (cellar) setName(cellar.name);
@@ -223,13 +229,44 @@ function SharePage() {
       downloadText("cha-caddy-backup.json", result.json, "application/json");
       toast.success(
         result.wroteArtifact
-          ? `Full backup of ${result.teaCount} teas in ${result.cellarCount} cellar${result.cellarCount === 1 ? "" : "s"}.`
-          : `Full backup of ${result.teaCount} teas.`,
+          ? `Remake kit of ${result.teaCount} teas in ${result.cellarCount} cellar${result.cellarCount === 1 ? "" : "s"}.`
+          : `Backup of ${result.teaCount} teas.`,
       );
     } catch (err) {
       toast.error(errMsg(err, "Could not write a full backup."));
     } finally {
       setBackingUp(false);
+    }
+  }
+
+  function pickRestore(mode: "merge" | "replace") {
+    if (mode === "replace") {
+      const ok = window.confirm(
+        "Replace every tea on this shelf with the backup? This cannot be undone from the cellar — keep a backup first.",
+      );
+      if (!ok) return;
+    }
+    restoreMode.current = mode;
+    restoreInput.current?.click();
+  }
+
+  async function onRestoreFile(file: File | undefined) {
+    if (!file) return;
+    setRestoring(true);
+    try {
+      const text = await file.text();
+      const result = await restoreBackup({ data: { json: text, mode: restoreMode.current } });
+      await queryClient.invalidateQueries({ queryKey: cellarQueryKey(meId) });
+      toast.success(
+        result.skipped
+          ? `Restored ${result.imported} teas. Skipped ${result.skipped} already on this shelf.`
+          : `Restored ${result.imported} teas.`,
+      );
+    } catch (err) {
+      toast.error(errMsg(err, "Could not restore that backup."));
+    } finally {
+      setRestoring(false);
+      if (restoreInput.current) restoreInput.current.value = "";
     }
   }
 
@@ -598,16 +635,46 @@ function SharePage() {
         </section>
       ) : null}
 
-      <section className="space-y-2">
-        <h2 className="font-display text-2xl font-medium">Full backup</h2>
+      <section className="space-y-3">
+        <h2 className="font-display text-2xl font-medium">Remake kit</h2>
         <p className="text-sm text-muted-foreground">
-          The live cellar database — every tea you can see, including ones added by hand, with
-          photos, sessions, and household notes. Use this when the preview download fails.
+          Everything that would vanish if this preview is remade or goes down: teas, photos,
+          sessions, comments, household names, and cellar settings. It does not include your
+          password — on a new copy, sign in, then restore. Keep the JSON somewhere safe (GitHub
+          cannot hold the live cellar).
         </p>
-        <Button type="button" variant="celadon" className="w-full" onClick={() => void onFullBackup()} disabled={backingUp}>
+        <Button type="button" variant="celadon" className="w-full" onClick={() => void onFullBackup()} disabled={backingUp || restoring}>
           <Download className="size-4" />
-          {backingUp ? "Writing backup…" : "Full backup"}
+          {backingUp ? "Writing backup…" : "Backup everything"}
         </Button>
+        <input
+          ref={restoreInput}
+          type="file"
+          accept="application/json,.json"
+          className="sr-only"
+          onChange={(e) => void onRestoreFile(e.target.files?.[0])}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={backingUp || restoring}
+            onClick={() => pickRestore("merge")}
+          >
+            {restoring ? "Restoring…" : "Add from file"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={backingUp || restoring}
+            onClick={() => pickRestore("replace")}
+          >
+            Replace from file
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Add keeps teas already on this shelf. Replace clears this shelf first. Owner only.
+        </p>
       </section>
 
       {cellar.role === "owner" ? (

@@ -130,7 +130,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Link to="/" className="flex shrink-0 items-center gap-2 text-foreground">
             <GaiwanMark className="size-6 text-celadon" />
             <span className="font-display text-lg font-medium tracking-tight">Cha Caddy</span>
-            <span className="text-[10px] text-muted-foreground/45">v1.7</span>
+            <span className="text-[10px] text-muted-foreground/45">v1.8</span>
           </Link>
           <div className="flex min-w-0 items-center gap-0.5">
             {shelves.length > 1 ? (
